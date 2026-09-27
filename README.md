@@ -57,6 +57,7 @@ The public contract is intentionally small:
 - optional debug formatters `formatPlain()` and `formatHtml()`
 - explicit, idempotent `dispose()`
 - `getNativeInfo()` for package, Node-API, platform, and Ghostty build metadata
+- `supportsMouseInput`, an import-time capability marker that requires no native allocation
 
 All dimensions are validated as positive integers. Using a terminal after `dispose()` throws.
 
@@ -74,10 +75,28 @@ a terminal cell. `anyButtonPressed` supplies the caller-owned aggregate button
 state needed for drag events outside the viewport. `trackLastCell` asks Ghostty
 to suppress duplicate motion events within one unchanged cell.
 
+Geometry must describe the same grid as `createTerminal` or the latest `resize`:
+subtract padding from the screen dimensions, then divide by cell size. The
+binding does not reconcile mismatched grids. Dimensions and padding must fit
+unsigned 32-bit integers, total padding must not exceed the screen dimensions,
+and the resulting grid must fit 65535 cells per axis. Coordinates are converted
+to 32-bit floats by the C API; after padding is removed they must fit signed
+32-bit pixel coordinates and a cell index below 65536. Unrepresentable input
+throws `RangeError` before reaching Ghostty, including for suppressed events.
+Ordinary negative and off-screen positions remain supported.
+
+With the pinned Ghostty version, any non-empty `feed()` resets motion
+deduplication when the next mouse event refreshes negotiated modes. Geometry
+changes also reset it. SGR-pixels reports motion even within the same cell.
+
 Buttons `four`, `five`, `six`, and `seven` conventionally represent wheel up,
 wheel down, wheel left, and wheel right. The binding keeps Ghostty's names at
 this low-level API boundary so consumers can provide their own user-facing
 aliases.
+Send wheel events as `press` only: a wheel release in legacy formats is encoded
+as an ordinary button release. Buttons `ten` and `eleven` have no button codes in
+the pinned Ghostty encoder and normally produce an empty buffer; legacy release
+encoding still applies.
 
 ## Native Build
 

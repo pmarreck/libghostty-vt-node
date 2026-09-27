@@ -116,7 +116,7 @@ function optionalBoolean(name: string, value: unknown): boolean {
 
 // Reject ambiguous input before native allocation and retain only the fields
 // that Ghostty's mouse event model can represent.
-function normalizeMouseEvent(event: MouseInputEvent): MouseInputEvent {
+function normalizeMouseEvent(event: MouseInputEvent, geometry: MouseGeometry): MouseInputEvent {
   assertObject("mouse event", event);
   if (!mouseActions.has(event.action)) throw new TypeError("mouse action is invalid");
   if (event.button !== undefined && !mouseButtons.has(event.button)) {
@@ -127,6 +127,8 @@ function normalizeMouseEvent(event: MouseInputEvent): MouseInputEvent {
   }
   assertFiniteNumber("mouse x", event.x);
   assertFiniteNumber("mouse y", event.y);
+  assertMouseCoordinate("mouse x", event.x, geometry.paddingLeft ?? 0, geometry.cellWidth);
+  assertMouseCoordinate("mouse y", event.y, geometry.paddingTop ?? 0, geometry.cellHeight);
 
   let modifiers: MouseModifiers | undefined;
   if (event.modifiers !== undefined) {
@@ -145,6 +147,21 @@ function normalizeMouseEvent(event: MouseInputEvent): MouseInputEvent {
     y: event.y,
     ...(modifiers === undefined ? {} : { modifiers }),
   };
+}
+
+// Ghostty stores positions as f32 before converting to u16 cells and i32 pixels.
+// Check the rounded representation, including off-screen releases and drags.
+function assertMouseCoordinate(name: string, value: number, padding: number, cell: number): void {
+  const position = Math.fround(value) - padding;
+  if (position < -2147483648 || position > 2147483647 || position / cell >= 65536) {
+    throw new RangeError(`${name} is outside Ghostty's cell or pixel coordinate range`);
+  }
+}
+
+function assertMouseAxis(name: string, screen: number, cell: number, padding: number): void {
+  if (padding > screen) throw new RangeError(`mouse geometry padding exceeds ${name}`);
+  const cells = Math.fround(Math.fround(screen - padding) / Math.fround(cell));
+  if (cells >= 65536) throw new RangeError(`mouse geometry.${name} exceeds the 65535-cell limit`);
 }
 
 // Fill stable defaults while preserving explicit renderer geometry for both
@@ -169,6 +186,13 @@ function normalizeMouseOptions(options: MouseEncoderOptions): MouseEncoderOption
     if (value !== undefined) assertNonNegativeInteger(`mouse geometry.${key}`, value);
     normalizedGeometry[key] = value ?? 0;
   }
+  for (const [key, value] of Object.entries(normalizedGeometry)) {
+    if (value > 0xffffffff) throw new RangeError(`mouse geometry.${key} exceeds the 32-bit limit`);
+  }
+  assertMouseAxis("screenWidth", geometry.screenWidth, geometry.cellWidth,
+    normalizedGeometry.paddingLeft! + normalizedGeometry.paddingRight!);
+  assertMouseAxis("screenHeight", geometry.screenHeight, geometry.cellHeight,
+    normalizedGeometry.paddingTop! + normalizedGeometry.paddingBottom!);
 
   return {
     geometry: normalizedGeometry,
@@ -202,7 +226,8 @@ class Terminal implements GhosttyVtTerminal {
 
   encodeMouse(event: MouseInputEvent, options: MouseEncoderOptions): Buffer {
     this.#assertUsable();
-    return this.#native.encodeMouse(normalizeMouseEvent(event), normalizeMouseOptions(options));
+    const normalizedOptions = normalizeMouseOptions(options);
+    return this.#native.encodeMouse(normalizeMouseEvent(event, normalizedOptions.geometry), normalizedOptions);
   }
 
   snapshot(options?: SnapshotOptions): TerminalSnapshot {

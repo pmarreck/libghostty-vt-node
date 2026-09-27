@@ -170,6 +170,31 @@ describeIfNative("GhosttyVtTerminal", () => {
     }
   });
 
+  it("covers button tracking, legacy releases, X10 limits, and UTF-8 coordinates", () => {
+    const cases = [
+      { mode: "\x1b[?1002h\x1b[?1006h", action: "motion", button: "left", x: 2, expected: Buffer.from("\x1b[<32;3;4M") },
+      { mode: "\x1b[?1002h\x1b[?1006h", action: "motion", x: 2, expected: Buffer.alloc(0) },
+      { mode: "\x1b[?1000h", action: "release", button: "left", x: 2, expected: Buffer.from("\x1b[M##$") },
+      { mode: "\x1b[?1000h\x1b[?1015h", action: "release", button: "left", x: 2, expected: Buffer.from("\x1b[35;3;4M") },
+      { mode: "\x1b[?9h", action: "release", button: "left", x: 2, expected: Buffer.alloc(0) },
+      { mode: "\x1b[?9h", action: "press", button: "four", x: 2, expected: Buffer.alloc(0) },
+      { mode: "\x1b[?1000h", action: "press", button: "left", x: 222, expected: Buffer.from([27, 91, 77, 32, 255, 36]) },
+      { mode: "\x1b[?1000h", action: "press", button: "left", x: 223, expected: Buffer.alloc(0) },
+      { mode: "\x1b[?1000h\x1b[?1005h", action: "press", button: "left", x: 99, expected: Buffer.from([27, 91, 77, 32, 0xc2, 0x84, 36]) },
+    ] as const;
+    for (const { mode, expected, ...event } of cases) {
+      const term = createTerminal({ cols: 300, rows: 24 });
+      try {
+        term.feed(mode);
+        expect(term.encodeMouse({ ...event, y: 3 }, {
+          geometry: { ...unitGeometry, screenWidth: 300 },
+        })).toEqual(expected);
+      } finally {
+        term.dispose();
+      }
+    }
+  });
+
   it("applies tracking-mode, pressed-button, viewport, and motion-dedup classifiers", () => {
     const cases = [
       {
@@ -301,8 +326,10 @@ describeIfNative("GhosttyVtTerminal", () => {
           ),
       ];
 
-      for (const invalidCall of invalidCalls) {
-        expect(invalidCall).toThrow();
+      const errors = [/action/, /button/, /button/, /button/, /mouse x/, /mouse y/,
+        /shift/, /cellWidth/, /screenWidth/, /paddingLeft/, /anyButtonPressed/];
+      for (const [index, invalidCall] of invalidCalls.entries()) {
+        expect(invalidCall).toThrow(errors[index]);
       }
     } finally {
       term.dispose();

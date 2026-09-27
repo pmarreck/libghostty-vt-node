@@ -68,6 +68,33 @@ float FiniteFloat(Napi::Env env, const Napi::Value& value, const char* name) {
   return static_cast<float>(number);
 }
 
+// Validate the same f32 grid calculation Ghostty performs before its u16 cast.
+// Widen padding sums first so hostile u32 input cannot wrap during validation.
+void ValidateMouseAxis(Napi::Env env, uint32_t screen, uint32_t cell,
+                       uint64_t padding, const char* name) {
+  if (padding > screen) {
+    throw Napi::RangeError::New(env, std::string("mouse geometry padding exceeds ") + name);
+  }
+  const float cells = static_cast<float>(screen - padding) / static_cast<float>(cell);
+  if (cells >= 65536) {
+    throw Napi::RangeError::New(env, std::string("mouse geometry.") + name + " exceeds the 65535-cell limit");
+  }
+}
+
+// Positions cross the C API as f32, then Ghostty removes padding in f64.
+// Reject values that cannot reach either cell or pixel encoding safely.
+float MouseCoordinate(Napi::Env env, const Napi::Value& value, const char* name,
+                      uint32_t padding, uint32_t cell) {
+  const float position = FiniteFloat(env, value, name);
+  const double terminal_position = static_cast<double>(position) - padding;
+  if (terminal_position < std::numeric_limits<int32_t>::min() ||
+      terminal_position > std::numeric_limits<int32_t>::max() ||
+      terminal_position / cell >= 65536) {
+    throw Napi::RangeError::New(env, std::string(name) + " is outside Ghostty's cell or pixel coordinate range");
+  }
+  return position;
+}
+
 GhosttyMouseAction ParseMouseAction(Napi::Env env, const Napi::Value& value) {
   if (!value.IsString()) throw Napi::TypeError::New(env, "mouse action must be a string");
   const std::string action = value.As<Napi::String>().Utf8Value();
@@ -305,6 +332,14 @@ Napi::Value TerminalWrap::EncodeMouse(const Napi::CallbackInfo& info) {
   size.padding_bottom = NonNegativeUint32(env, geometry.Get("paddingBottom"), "paddingBottom");
   size.padding_right = NonNegativeUint32(env, geometry.Get("paddingRight"), "paddingRight");
   size.padding_left = NonNegativeUint32(env, geometry.Get("paddingLeft"), "paddingLeft");
+  ValidateMouseAxis(env, size.screen_width, size.cell_width,
+                    static_cast<uint64_t>(size.padding_left) + size.padding_right, "screenWidth");
+  ValidateMouseAxis(env, size.screen_height, size.cell_height,
+                    static_cast<uint64_t>(size.padding_top) + size.padding_bottom, "screenHeight");
+  const GhosttyMousePosition position = {
+      MouseCoordinate(env, input.Get("x"), "mouse x", size.padding_left, size.cell_width),
+      MouseCoordinate(env, input.Get("y"), "mouse y", size.padding_top, size.cell_height),
+  };
 
   if (mouse_modes_dirty_) {
     ghostty_mouse_encoder_setopt_from_terminal(encoder, terminal);
@@ -336,12 +371,7 @@ Napi::Value TerminalWrap::EncodeMouse(const Napi::CallbackInfo& info) {
       ghostty_mouse_event_set_button(event, ParseMouseButton(env, button));
     }
     ghostty_mouse_event_set_mods(event, ParseMouseModifiers(env, input.Get("modifiers")));
-    ghostty_mouse_event_set_position(
-        event,
-        GhosttyMousePosition{
-            FiniteFloat(env, input.Get("x"), "mouse x"),
-            FiniteFloat(env, input.Get("y"), "mouse y"),
-        });
+    ghostty_mouse_event_set_position(event, position);
 
     size_t required = 0;
     result = ghostty_mouse_encoder_encode(encoder, event, nullptr, 0, &required);
