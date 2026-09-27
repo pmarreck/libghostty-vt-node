@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { spawnSync } from "node:child_process";
 import { createTerminal } from "../src/index.js";
 import { loadNative } from "../src/loader.js";
 
@@ -12,6 +13,33 @@ describe.each([
   ["public", createTerminal],
   ["native", (options: { cols: number; rows: number }) => loadNative().createTerminal(options)],
 ] as const)("%s mouse safety", (_name, create) => {
+  it("rejects unsafe UTF-8 codepoints without terminating the process", () => {
+    // Run untrusted native edge cases in a child so a regression cannot abort
+    // the entire suite when Ghostty is built with runtime safety enabled.
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import assert from "node:assert/strict";
+      import { createRequire } from "node:module";
+      const require = createRequire(import.meta.url);
+      const { createTerminal } = ${_name === "public"
+        ? 'await import("./dist/index.js")'
+        : 'require("node-gyp-build")(process.cwd())'};
+      const term = createTerminal({ cols: 80, rows: 24 });
+      term.feed("\\x1b[?1000h\\x1b[?1005h");
+      const options = { geometry: ${JSON.stringify({ ...geometry, screenWidth: 65535, screenHeight: 65535 })} };
+      for (const [x, y] of [[55263, 0], [0, 55263], [57310, 0], [0, 65503]]) {
+        assert.throws(() => term.encodeMouse({ action: "press", button: "left", x, y }, options), RangeError);
+      }
+      // Clamping happens before UTF-8 conversion: a distant release on a small
+      // viewport is safe even when the original coordinate was problematic.
+      const bytes = term.encodeMouse({ action: "release", button: "left", x: 55263, y: 65503 },
+        { geometry: ${JSON.stringify(geometry)} });
+      assert.ok(bytes.length > 0);
+      term.dispose();
+    `], { encoding: "utf8" });
+    expect({ status: child.status, signal: child.signal, stderr: child.stderr })
+      .toEqual({ status: 0, signal: null, stderr: "" });
+  });
+
   it("rejects geometry that overflows Ghostty's grid or padding arithmetic", () => {
     const term = create({ cols: 80, rows: 24 });
     try {

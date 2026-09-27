@@ -85,6 +85,11 @@ to 32-bit floats by the C API; after padding is removed they must fit signed
 throws `RangeError` before reaching Ghostty, including for suppressed events.
 Ordinary negative and off-screen positions remain supported.
 
+When UTF-8 mouse mode (1005) is set, the binding also rejects clamped cell
+coordinates whose encoded value would be a Unicode surrogate, or whose row
+would overflow the pinned encoder's 16-bit arithmetic. This conservative guard
+applies while 1005 remains set even if another mouse format was selected later.
+
 With the pinned Ghostty version, any non-empty `feed()` resets motion
 deduplication when the next mouse event refreshes negotiated modes. Geometry
 changes also reset it. SGR-pixels reports motion even within the same cell.
